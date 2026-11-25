@@ -9,3 +9,5 @@ venv/
 *.log
 appbench_constraints.txt
 .sync-backups/
+.build/
+.pytest_cache/

@@ -1,411 +1,255 @@
-"""Streamlit 界面：streamlit run app.py"""
+"""Launch the documentation assistant with streamlit run app.py."""
 
 import html
 import re
 import time
 import uuid
-from pathlib import Path
 
 import streamlit as st
 
 import config
 import rag
 
-MODES = {"rag": "RAG", "plain": "无 RAG"}
-PROJECT_COLORS = {"Obsidian": "violet", "Dataview": "blue", "Tasks": "green"}
-PROJECT_LABELS = {
-    "Obsidian": "Obsidian 官方帮助",
-    "Dataview": "Dataview 官方文档",
-    "Tasks": "Tasks 官方文档",
-}
-PROJECT_ICONS = {"Obsidian": "🟣", "Dataview": "🔵", "Tasks": "🟢"}
-EXAMPLES = [
-    ("Obsidian", "如何链接到另一篇笔记里的某个标题？"),
-    ("Dataview", "怎么列出带 #book 标签的笔记，并按评分从高到低排序？"),
-    ("Tasks", "如何查询未来 7 天内到期且未完成的任务？"),
-    ("Obsidian", "Properties 支持哪些属性类型？"),
-    ("Dataview", "TABLE 和 LIST 两种查询有什么区别？"),
-    ("Tasks", "怎么创建每周一重复的任务？"),
-]
-LLM_NAME = Path(config.QWEN_MODEL_PATH).name
-
-CSS = """
+st.set_page_config(page_title="Obsidian Docs Assistant", page_icon="📖", layout="wide")
+st.markdown("""
 <style>
-[data-testid="stHeader"] {
-    background: rgba(255, 255, 255, 0.92);
-    backdrop-filter: blur(10px);
-    border-bottom: 1px solid rgba(124, 58, 237, 0.08);
-}
-[data-testid="stDecoration"] { display: none; }
-.block-container { padding-top: 5.4rem; max-width: 1180px; }
-.hero {
-    display: flex; align-items: center; gap: 1rem;
-    margin: 0 0 1.35rem; padding: 1.05rem 1.2rem 1.1rem;
-    border: 1px solid rgba(124, 58, 237, 0.16); border-radius: 1rem;
-    background:
-        linear-gradient(120deg, rgba(124, 58, 237, 0.1), rgba(236, 72, 153, 0.05) 42%, rgba(255, 255, 255, 0) 70%),
-        #fff;
-}
-.hero-mark {
-    flex: none; width: 3rem; height: 3rem; border-radius: 0.85rem;
-    display: grid; place-items: center; color: white; font-size: 1.15rem; font-weight: 750;
-    background: linear-gradient(135deg, #6D28D9 0%, #A855F7 55%, #EC4899 100%);
-    box-shadow: 0 8px 18px rgba(124, 58, 237, 0.22);
-}
-.hero-kicker {
-    color: #7C3AED; font-size: 0.74rem; font-weight: 750;
-    letter-spacing: 0.08em; text-transform: uppercase;
-}
-.hero-title {
-    margin-top: 0.12rem; font-size: 1.85rem; font-weight: 760;
-    letter-spacing: -0.03em; line-height: 1.15; color: #1F1B2E;
-}
-.hero-sub { color: #6B6680; font-size: 0.95rem; margin-top: 0.28rem; line-height: 1.45; }
-.pipeline { color: #6B6680; font-size: 0.82rem; line-height: 1.9; }
-.pipeline b { color: #6D28D9; font-weight: 600; }
-.panel-label { font-size: 0.8rem; font-weight: 650; letter-spacing: 0.04em; margin-bottom: 0.3rem; }
-.panel-label.rag { color: #6D28D9; }
-.panel-label.plain { color: #8A8599; }
-.source-kicker { display: flex; align-items: center; gap: 0.45rem; margin-bottom: 0.35rem; }
-.source-number {
-    display: inline-flex; align-items: center; justify-content: center;
-    min-width: 1.65rem; height: 1.65rem; padding: 0 0.4rem; border-radius: 999px;
-    color: white; background: #7C3AED; font-size: 0.76rem; font-weight: 750;
-}
-.source-project {
-    color: #6D28D9; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.025em;
-}
-.source-title { font-size: 1.08rem; font-weight: 720; line-height: 1.35; }
-.source-section { color: #777184; font-size: 0.84rem; margin-top: 0.28rem; }
-.source-score { text-align: center; padding: 0.5rem 0.25rem; }
-.source-score-value { color: #6D28D9; font-size: 1.35rem; font-weight: 760; line-height: 1.1; }
-.source-score-label { color: #8A8599; font-size: 0.7rem; margin-top: 0.2rem; }
-.source-meta {
-    color: #6B6680; font-size: 0.78rem; line-height: 1.7;
-    padding: 0.5rem 0.7rem; border-radius: 0.45rem;
-    background: rgba(128, 128, 128, 0.07); margin: 0.45rem 0 0.65rem;
-}
-.source-context {
-    border: 1px solid rgba(128, 128, 128, 0.22); border-radius: 0.55rem;
-    overflow: hidden; margin-top: 0.55rem; background: rgba(128, 128, 128, 0.04);
-}
-.source-context pre {
-    margin: 0; padding: 0.7rem 0.85rem; white-space: pre-wrap; overflow-wrap: anywhere;
-    font-size: 0.82rem; line-height: 1.55; font-family: var(--font-monospace);
-}
-.source-context .context-muted { color: #777184; }
-.source-context .context-hit {
-    color: inherit; background: rgba(168, 85, 247, 0.14);
-    border-top: 1px solid rgba(168, 85, 247, 0.25);
-    border-bottom: 1px solid rgba(168, 85, 247, 0.25);
-}
+[data-testid="stMainBlockContainer"] {max-width: 1080px; padding-top: 3.6rem;}
+[data-testid="stSidebar"] {border-right: 1px solid #e2dfea;}
+[data-testid="stSidebar"] h2 {font-size: 1.05rem;}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {gap: .82rem;}
+[data-testid="stSidebar"] hr {margin: .45rem 0;}
+[data-testid="stHeader"] {background: transparent; height: 2.75rem;}
+[data-testid="stDecoration"] {display: none;}
+.intro {padding: 0 0 .8rem; border-bottom: 1px solid #ded9e7; margin-bottom: .35rem;}
+.intro h1 {color: #262035; font-size: clamp(2rem, 4vw, 3.15rem); line-height: 1.08;
+           padding: 0; margin: 0 0 .65rem; letter-spacing: -.05em;}
+.intro p {color: #5a5465; line-height: 1.5; font-size: 1.05rem; margin: 0 0 .45rem;}
+.answer-label {font-size: .81rem; font-weight: 700; color: #664a99; margin-bottom: .15rem;}
+.source-anchor {scroll-margin-top: 3.8rem;}
+.st-key-examples button {text-align: left; justify-content: flex-start; height: auto; min-height: 3.4rem;}
+.st-key-examples button p {text-align: left; line-height: 1.45;}
+.example-project {color: #684a98; font-size: .95rem; font-weight: 700;
+                  border-top: 2px solid #b5a3cc; padding: .75rem 0 .1rem;}
+.index-count {display: flex; justify-content: space-between; color: #595363; font-size: .87rem; line-height: 1.6;}
+.doc-lines {border-left: 3px solid #8061ac; overflow-x: auto; max-height: 24rem;
+            background: #f6f3fa; padding: .65rem .8rem; border-radius: .25rem;}
+.doc-line {display: flex; gap: .85rem; font-family: ui-monospace, Menlo, monospace;
+           font-size: .84rem; line-height: 1.6; color: #332741;}
+.doc-line .ln {flex: 0 0 2rem; color: #736584; user-select: none; text-align: right;}
+.doc-line .tx {white-space: pre-wrap; overflow-wrap: anywhere;}
+.doc-line.context {opacity: .65;}
+[data-testid="stChatMessage"] {border-radius: .6rem;}
 </style>
-"""
+""", unsafe_allow_html=True)
 
-st.set_page_config(
-    page_title="Obsidian 文档助手",
-    page_icon=":material/menu_book:",
-    layout="wide",
-)
-st.markdown(CSS, unsafe_allow_html=True)
+st.session_state.setdefault("turns", [])
+with st.sidebar:
+    language = st.selectbox("Interface language", ("English", "中文"), key="language")
 
 
-# ---------- 资源加载（整个应用只加载一次） ----------
+def tr(en: str, zh: str) -> str:
+    return en if language == "English" else zh
 
 
-@st.cache_resource(show_spinner="正在加载向量库和 Embedding 模型…")
-def load_index() -> dict:
-    stats = rag.index_stats()
-    rag.get_vector_store()
-    return stats
+EXAMPLES = [
+    ("Tasks", "Which status types does the Tasks ‘not done’ filter include?", "Tasks 的 not done 筛选器包含哪些状态类型？"),
+    ("Dataview", "How do I hide the default File column in a Dataview table?", "如何隐藏 Dataview 表格中默认的 File 列？"),
+    ("Obsidian", "How do I link to a heading in another note?", "如何链接到另一篇笔记里的某个标题？"),
+    ("Tasks", "How do I query tasks due tomorrow?", "如何查询明天到期的任务？"),
+    ("Dataview", "How do I sort a Dataview query in descending order?", "如何让 Dataview 查询按降序排序？"),
+    ("Obsidian", "Which property types can a note have?", "笔记支持哪些属性类型？"),
+]
 
-
-@st.cache_resource(show_spinner=f"正在加载 {LLM_NAME}…")
-def load_llm() -> bool:
-    rag.get_llm()
-    return True
-
-
-index_stats, index_error, llm_error = None, None, None
-try:
-    index_stats = load_index()
-except (rag.IndexNotReady, rag.ModelNotReady) as error:
-    index_error = str(error)
-try:
-    load_llm()
-except Exception as error:  # 路径错误、显存不足等都直接显示在界面上
-    llm_error = str(error)
-
-
-# ---------- 渲染 ----------
-
-CODE_BLOCK = re.compile(r"(```.*?```|`[^`\n]+`)", re.DOTALL)
+CODE = re.compile(r"(```.*?```|~~~.*?~~~|`[^`\n]+`)", re.DOTALL)
 CITATION = re.compile(r"\[(\d+)\](?!\()")
 
 
-def source_anchor(source: rag.Source, anchor_prefix: str) -> str:
-    return f"source-{anchor_prefix}-{source.chunk_id[:12]}"
+def anchor(turn_id: str, index: int) -> str:
+    return f"evidence-{turn_id}-{index}"
 
 
-def linkify_citations(
-    text: str, sources: list[rag.Source], anchor_prefix: str
-) -> str:
-    """把回答里的 [1] 变成页面内证据链接；代码里的内容不动。"""
-    urls = {
-        source.index: f"#{source_anchor(source, anchor_prefix)}"
-        for source in sources
-    }
+def linked_answer(text: str, sources: list[rag.Source], turn_id: str) -> str:
+    ids = {source.index for source in sources}
 
-    def replace(match: re.Match) -> str:
-        number = int(match.group(1))
-        if number not in urls:
-            return match.group(0)
-        return f"[\\[{number}\\]]({urls[number]})"
+    def link(match: re.Match) -> str:
+        number = int(match[1])
+        return f"[\\[{number}\\]](#{anchor(turn_id, number)})" if number in ids else match[0]
 
-    parts = CODE_BLOCK.split(text)
+    return "".join(part if i % 2 else CITATION.sub(link, part)
+                   for i, part in enumerate(CODE.split(text)))
+
+
+@st.cache_resource(show_spinner=False)
+def load_index() -> dict:
+    rag.get_vector_store()
+    return rag.index_stats()
+
+
+def line_rows(body: str, first: int, context: bool = False) -> str:
+    if not body:
+        return ""
+    style = "doc-line context" if context else "doc-line"
     return "".join(
-        part if index % 2 else CITATION.sub(replace, part)
-        for index, part in enumerate(parts)
+        f'<div class="{style}"><span class="ln">{n}</span><span class="tx">{html.escape(line)}</span></div>'
+        for n, line in enumerate(body.split("\n"), first)
     )
+
+
+def evidence(sources: list[rag.Source], turn_id: str) -> None:
+    if not sources:
+        return
+    st.markdown(f"#### {tr('Source passages', '来源原文')}")
+    for source in sources:
+        section = source.section.replace(" > ", " › ")
+        with st.expander(f"[{source.index}]  {source.project}  ·  {section}"):
+            st.markdown(f'<span class="source-anchor" id="{anchor(turn_id, source.index)}"></span>',
+                        unsafe_allow_html=True)
+            st.caption(f"{source.source}  ·  {tr('lines', '行')} {source.start_line}–{source.end_line}")
+            if source.exact_excerpt:
+                context = st.toggle(tr("Show surrounding lines", "显示上下文"), key=f"context-{turn_id}-{source.index}")
+                before = line_rows(source.context_before, source.context_start_line, True) if context else ""
+                hit = line_rows(source.raw_content, source.start_line)
+                after = line_rows(source.context_after, source.end_line + 1, True) if context else ""
+                st.markdown(f'<div class="doc-lines">{before}{hit}{after}</div>', unsafe_allow_html=True)
+            else:
+                st.caption(tr("Indexed excerpt", "索引片段"))
+                st.code(source.raw_content or source.content, language="markdown", wrap_lines=True)
+            st.link_button(tr("Open source on GitHub", "在 GitHub 查看原文"), source.url)
+            ranks = []
+            if source.semantic_rank:
+                ranks.append(f"{tr('Semantic rank', '语义排名')} {source.semantic_rank}")
+            if source.keyword_rank:
+                ranks.append(f"{tr('Keyword rank', '关键词排名')} {source.keyword_rank}")
+            if ranks:
+                st.caption("  ·  ".join(ranks))
 
 
 def render_answer(turn: dict, kind: str, live: bool) -> None:
-    """kind 为 'rag' 或 'plain'。live=True 时现场生成并流式显示。"""
-    use_rag = kind == "rag"
-    label = "RAG · 基于官方文档回答" if use_rag else f"无 RAG · {LLM_NAME} 直接回答"
-    st.markdown(
-        f'<div class="panel-label {kind}">{label}</div>', unsafe_allow_html=True
-    )
-
+    grounded = kind == "rag"
+    label = tr("With documentation", "基于文档") if grounded else tr("Model only", "仅模型")
+    st.markdown(f'<div class="answer-label">{label}</div>', unsafe_allow_html=True)
     if live and kind not in turn["errors"]:
-        slot = st.empty()
-        started = time.perf_counter()
-        try:
-            messages = rag.build_messages(
-                turn["question"], turn["sources"] if use_rag else None
-            )
-            with slot.container():
-                turn[kind] = st.write_stream(rag.generate_stream(messages))
-            turn["timing"][kind] = time.perf_counter() - started
-        except rag.ModelNotReady as error:
-            turn["errors"][kind] = f"生成模型未就绪：{error}"
-        except Exception as error:
-            turn["errors"][kind] = f"生成失败：{error}"
-        slot.empty()
-
+        if grounded and not turn["sources"]:
+            turn["answers"][kind] = tr("No passages were found in this scope.", "此范围内没有找到匹配片段。")
+        else:
+            messages = rag.build_messages(turn["question"], turn["sources"] if grounded else None)
+            slot = st.empty()
+            started = time.perf_counter()
+            try:
+                with slot.container():
+                    turn["answers"][kind] = st.write_stream(rag.generate_stream(messages))
+                turn["timing"][kind] = time.perf_counter() - started
+            except Exception as error:
+                turn["errors"][kind] = str(error)
+            finally:
+                slot.empty()
     if kind in turn["errors"]:
         st.warning(turn["errors"][kind])
         return
-
-    answer = turn[kind] or ""
-    st.markdown(
-        linkify_citations(answer, turn["sources"], turn["id"])
-        if use_rag
-        else answer
-    )
-    if use_rag:
-        st.caption(
-            f"检索 {len(turn['sources'])} 个片段用时 {turn['timing']['retrieve']:.2f} 秒"
-            f" · 生成用时 {turn['timing'][kind]:.1f} 秒"
-        )
-    else:
-        st.caption(f"未检索文档 · 生成用时 {turn['timing'][kind]:.1f} 秒")
-
-
-def render_sources(sources: list[rag.Source], anchor_prefix: str) -> None:
-    if not sources:
-        return
-    st.markdown(f"**参考来源**（{len(sources)}）")
-    for source in sources:
-        anchor = source_anchor(source, anchor_prefix)
-        st.markdown(f'<span id="{anchor}"></span>', unsafe_allow_html=True)
-        project_label = PROJECT_LABELS.get(source.project, source.project)
-        icon = PROJECT_ICONS.get(source.project, "📄")
-        section_parts = [part.strip() for part in source.section.split(" > ")]
-        current_section = section_parts[-1] if section_parts else source.title
-        relevance = round(max(0.0, min(1.0, source.score)) * 100)
-        with st.container(border=True):
-            title_column, score_column = st.columns(
-                [5, 1], gap="small", vertical_alignment="center"
-            )
-            with title_column:
-                st.markdown(
-                    '<div class="source-kicker">'
-                    f'<span class="source-number">{source.index}</span>'
-                    f'<span class="source-project">{icon} '
-                    f'{html.escape(project_label)}</span>'
-                    "</div>"
-                    f'<div class="source-title">{html.escape(source.title)}</div>'
-                    f'<div class="source-section">当前章节 · '
-                    f'{html.escape(current_section)}</div>',
-                    unsafe_allow_html=True,
-                )
-            with score_column:
-                st.markdown(
-                    '<div class="source-score">'
-                    f'<div class="source-score-value">{relevance}%</div>'
-                    '<div class="source-score-label">检索相关度</div>'
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-            st.markdown(
-                '<div class="source-meta">'
-                f'📍 原文位置：{html.escape(source.source)}，'
-                f'第 {source.start_line}–{source.end_line} 行<br>'
-                f'📚 章节路径：{html.escape(source.section)}'
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            st.link_button(
-                "打开原文准确位置",
-                source.url,
-                icon=":material/open_in_new:",
-            )
-            with st.expander("查看命中原文与上下文"):
-                before = html.escape(source.context_before)
-                hit = html.escape(source.raw_content)
-                after = html.escape(source.context_after)
-                st.markdown(
-                    '<div class="source-context">'
-                    f'<pre class="context-muted">{before}</pre>'
-                    f'<pre class="context-hit">{hit}</pre>'
-                    f'<pre class="context-muted">{after}</pre>'
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-                st.caption(
-                    f"上下文范围：第 {source.context_start_line}–"
-                    f"{source.context_end_line} 行；紫色区域为实际命中原文"
-                )
+    answer = turn["answers"].get(kind, "")
+    st.markdown(linked_answer(answer, turn["sources"], turn["id"]) if grounded else answer)
+    if kind in turn["timing"]:
+        parts = [f"{config.MODEL_LABEL}", f'{tr("generation", "生成")} {turn["timing"][kind]:.1f} s']
+        if grounded:
+            parts.insert(1, f'{tr("retrieval", "检索")} {turn["timing"]["retrieve"]:.2f} s')
+        st.caption("  ·  ".join(parts))
 
 
 def render_turn(turn: dict, live: bool = False) -> None:
-    turn.setdefault("id", uuid.uuid4().hex[:10])
     with st.chat_message("user"):
         st.markdown(turn["question"])
-
     with st.chat_message("assistant"):
-        mode = "rag" if turn["mode"] == "compare" else turn["mode"]
-
-        if live and mode != "plain":
+        if live and turn["mode"] != "plain":
             started = time.perf_counter()
             try:
-                with st.spinner("正在检索官方文档…"):
-                    turn["sources"] = rag.retrieve(
-                        turn["question"], turn["projects"], turn["k"]
-                    )
+                with st.spinner(tr("Looking up documentation…", "正在检索官方文档…")):
+                    turn["sources"] = rag.retrieve(turn["question"], turn["projects"], turn["k"])
                 turn["timing"]["retrieve"] = time.perf_counter() - started
-            except (rag.IndexNotReady, rag.ModelNotReady) as error:
-                turn["errors"]["rag"] = f"无法检索：{error}"
+            except Exception as error:
+                turn["errors"]["rag"] = str(error)
+        if turn["mode"] == "compare":
+            left, right = st.columns(2, gap="medium")
+            with left:
+                render_answer(turn, "rag", live)
+            with right:
+                render_answer(turn, "plain", live)
+        else:
+            render_answer(turn, turn["mode"], live)
+        evidence(turn["sources"], turn["id"])
 
-        render_answer(turn, mode, live)
-        if mode != "plain":
-            render_sources(turn["sources"], turn["id"])
-
-
-# ---------- 侧边栏 ----------
 
 with st.sidebar:
-    st.markdown("### 设置")
-    mode = st.segmented_control(
-        "回答模式",
-        options=list(MODES),
-        format_func=MODES.get,
-        default="rag",
-        required=True,
-        help="无 RAG 时模型直接回答，不检索文档。",
-    )
-    projects = st.pills(
-        "数据源",
-        options=config.PROJECTS,
-        selection_mode="multi",
-        default=config.PROJECTS,
-        help="只在选中的文档里检索。",
-    )
-    if not projects:
-        st.caption("未选择数据源，将检索全部文档。")
-    top_k = st.slider("检索片段数", min_value=3, max_value=8, value=config.TOP_K)
-
+    st.header(tr("Search settings", "检索设置"))
+    modes = {"rag": tr("Docs", "文档"), "compare": tr("Compare", "对比"), "plain": tr("Model", "模型")}
+    mode = st.segmented_control(tr("Answer mode", "回答模式"), list(modes), format_func=modes.get,
+                                default="rag", required=True)
+    projects = st.pills(tr("Documentation", "文档范围"), config.PROJECTS, selection_mode="multi",
+                        default=config.PROJECTS, disabled=mode == "plain")
+    top_k = st.slider(tr("Maximum sources", "最多引用数"), 1, 8, min(8, max(1, config.TOP_K)), disabled=mode == "plain")
     st.divider()
-    st.markdown("### 系统状态")
-    if index_stats:
-        counts = " · ".join(
-            f"{project} {count}" for project, count in index_stats["per_project"].items()
-        )
-        st.markdown(
-            '<div class="pipeline">'
-            f'官方 Markdown 文档<br>→ <b>{index_stats["total"]}</b> 个文本块<br>'
-            f'<span style="font-size:0.76rem">（{counts}）</span><br>'
-            f'→ <b>{index_stats["embedding_model"]}</b> 向量化<br>'
-            "→ <b>ChromaDB</b> 相似度检索<br>"
-            f"→ <b>{LLM_NAME}</b> 生成带引用的回答"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.error(f"向量库未就绪：{index_error}")
-    if llm_error:
-        st.warning(f"生成模型未就绪：{llm_error}")
-    else:
-        st.caption(f"{LLM_NAME} 已加载（{config.resolve_device()}）")
-
-    st.divider()
-    if st.button("清空对话", icon=":material/delete_sweep:", width="stretch"):
+    st.header(tr("Local index", "本地索引"))
+    try:
+        stats = load_index()
+    except Exception as error:
+        stats = None
+        st.error(str(error))
+    if stats:
+        count = f"{stats['total']:,}"
+        docs = stats.get("documents")
+        overview = tr(f"{docs} documents · {count} passages", f"{docs} 篇文档 · {count} 个片段") if docs else tr(f"{count} passages", f"{count} 个片段")
+        st.markdown(f"**{overview}**")
+        st.markdown("".join(f'<div class="index-count"><span>{p}</span><span>{n:,}</span></div>'
+                            for p, n in stats["per_project"].items()), unsafe_allow_html=True)
+    st.caption(tr("Generator", "生成模型") + f"  ·  {config.MODEL_LABEL}")
+    with st.expander(tr("How search works", "检索方式")):
+        st.write(tr("BGE embeddings find related passages. BM25 finds literal terms. Reciprocal rank fusion combines the two lists before neighboring hits are merged.",
+                    "向量检索找语义相关段落，BM25 找原词。系统合并两个排名，将同节的相邻命中合为一个引用。"))
+        if stats:
+            st.caption(f"Chroma · SQLite FTS5 · {stats['embedding_model']}")
+    if st.button(tr("New conversation", "新对话"), width="stretch"):
         st.session_state.turns = []
         st.rerun()
 
-
-# ---------- 主区域 ----------
-
+intro = tr("Ask how something works in Obsidian or its plugins. Check the answer against the original documentation.",
+           "提问 Obsidian 及插件的使用方法，点击引用即可核对官方文档的对应行。")
 st.markdown(
-    '<div class="hero">'
-    '<div class="hero-mark">文</div>'
-    "<div>"
-    '<div class="hero-kicker">Obsidian · Dataview · Tasks</div>'
-    '<div class="hero-title">Obsidian 文档助手</div>'
-    '<div class="hero-sub">从官方文档检索依据，'
-    f"再由本地 {html.escape(LLM_NAME)} 生成带来源引用的回答</div>"
-    "</div></div>",
+    f'<div class="intro"><h1>{tr("Obsidian Docs Assistant", "Obsidian 文档助手")}</h1>'
+    f'<p>{intro}</p></div>',
     unsafe_allow_html=True,
 )
 
-st.session_state.setdefault("turns", [])
+blocked = mode != "plain" and (not projects or not stats)
+if blocked and not projects:
+    st.info(tr("Select a documentation source to ask a question.", "请选择至少一个文档来源。"))
 
 
 def ask_example(question: str) -> None:
     st.session_state.pending_question = question
 
 
-# chat_input 固定在页面底部，先取到问题，才能决定是否还显示示例问题
-typed = st.chat_input("问一个关于 Obsidian、Dataview 或 Tasks 的问题")
-question = typed or st.session_state.pop("pending_question", None)
-
+typed = st.chat_input(tr("Ask about Obsidian, Dataview or Tasks", "提问 Obsidian、Dataview 或 Tasks"),
+                      disabled=blocked)
+question = (typed or st.session_state.pop("pending_question", "")).strip()
 if not st.session_state.turns and not question:
-    st.markdown("##### 试试这些问题")
-    columns = st.columns(3)
-    for position, (project, example) in enumerate(EXAMPLES):
-        columns[position % 3].button(
-            f":{PROJECT_COLORS[project]}[**{project}**]  \n{example}",
-            key=f"example-{position}",
-            on_click=ask_example,
-            args=(example,),
-            width="stretch",
-        )
+    st.subheader(tr("Try a question", "试试这些问题"))
+    visible = config.PROJECTS if mode == "plain" else projects
+    if visible:
+        with st.container(key="examples"):
+            columns = st.columns(len(visible))
+            for column, project in zip(columns, visible):
+                with column:
+                    st.markdown(f'<div class="example-project">{project}</div>', unsafe_allow_html=True)
+                    for index, (owner, en, zh) in enumerate(EXAMPLES):
+                        if owner == project:
+                            example = tr(en, zh)
+                            st.button(example, key=f"example-{index}", on_click=ask_example,
+                                      args=(example,), disabled=blocked, width="stretch", wrap=True)
 
 for turn in st.session_state.turns:
     render_turn(turn)
 
-if question:
-    turn = {
-        "question": question.strip(),
-        "mode": mode,
-        "projects": list(projects),
-        "k": top_k,
-        "plain": None,
-        "rag": None,
-        "sources": [],
-        "timing": {},
-        "errors": {},
-    }
+if question and not blocked:
+    turn = {"id": uuid.uuid4().hex[:10], "question": question, "mode": mode, "projects": list(projects),
+            "k": top_k, "answers": {}, "sources": [], "timing": {}, "errors": {}}
     render_turn(turn, live=True)
     st.session_state.turns.append(turn)

@@ -8,8 +8,9 @@
 import argparse
 import hashlib
 import re
+import subprocess
+import uuid
 from collections import Counter
-from pathlib import Path
 from urllib.parse import quote
 
 from langchain_core.documents import Document
@@ -200,24 +201,42 @@ def load_chunks() -> list[Document]:
         if not docs_dir.is_dir():
             raise SystemExit(f"找不到 {docs_dir}，请先把仓库 clone 到 data/ 目录")
 
+        versioned = (repo_dir / ".git").exists()
+        revision = source["branch"]
+        if versioned:
+            revision = subprocess.check_output(
+                ["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True
+            ).strip()
+            entries = subprocess.check_output([
+                "git", "-C", str(repo_dir), "ls-tree", "-rz", "--name-only", revision, "--", source["docs"]
+            ]).decode("utf-8").split("\0")
+            paths = (repo_dir / entry for entry in entries if entry.endswith(".md"))
+        else:
+            paths = docs_dir.rglob("*.md")
         file_count = 0
-        for path in sorted(docs_dir.rglob("*.md")):
+        for path in sorted(paths):
             relative_to_docs = path.relative_to(docs_dir)
             if path.name in source["skip_files"]:
                 continue
             if source["skip_dirs"] & set(relative_to_docs.parts):
                 continue
 
-            raw_text = path.read_text(encoding="utf-8", errors="ignore")
+            relative = path.relative_to(repo_dir).as_posix()
+            if versioned:
+                # Read the committed file even if the checkout contains local edits.
+                raw_text = subprocess.check_output([
+                    "git", "-C", str(repo_dir), "show", f"{revision}:{relative}"
+                ]).decode("utf-8", errors="replace")
+            else:
+                raw_text = path.read_text(encoding="utf-8", errors="replace")
             text, line_numbers = clean_markdown_with_lines(raw_text)
             if len(text) < 50:
                 continue
             file_count += 1
 
-            relative = path.relative_to(repo_dir).as_posix()
             url = (
                 f"https://github.com/{source['repo']}/blob/"
-                f"{source['branch']}/{quote(relative)}"
+                f"{revision}/{quote(relative)}"
             )
             # Obsidian Help 的页面没有一级标题，标题就是文件名
             first_heading = re.match(r"# +(.+)", text)
@@ -269,6 +288,8 @@ def load_chunks() -> list[Document]:
 
 
 def print_stats(chunks: list[Document]) -> None:
+    if not chunks:
+        raise SystemExit("No Markdown passages found. Run python prepare_docs.py first.")
     per_project = Counter(chunk.metadata["project"] for chunk in chunks)
     lengths = sorted(len(chunk.page_content) for chunk in chunks)
     print(f"共 {len(chunks)} 个文本块：{dict(per_project)}")
@@ -281,39 +302,59 @@ def print_stats(chunks: list[Document]) -> None:
 def build_index(chunks: list[Document]) -> None:
     import chromadb
     from langchain_chroma import Chroma
-    from langchain_huggingface import HuggingFaceEmbeddings
+    from rag import get_embeddings
 
-    device = config.resolve_device()
-    print(f"加载 Embedding 模型：{config.EMBEDDING_MODEL_PATH}（{device}）")
-    embeddings = HuggingFaceEmbeddings(
-        model_name=config.EMBEDDING_MODEL_PATH,
-        model_kwargs={"device": device},
-        encode_kwargs={"normalize_embeddings": True, "batch_size": 16},
-    )
+    if not chunks:
+        raise ValueError("Cannot build an empty index")
+    fingerprint = hashlib.sha256(config.EMBEDDING_ID.encode())
+    for chunk in chunks:
+        for field in ("chunk_id", "url", "start_line", "end_line"):
+            fingerprint.update(str(chunk.metadata[field]).encode() + b"\0")
 
     client = chromadb.PersistentClient(path=config.CHROMA_PATH)
     existing = {collection.name for collection in client.list_collections()}
-    if config.COLLECTION_NAME in existing:
-        client.delete_collection(config.COLLECTION_NAME)  # 重建，避免重复数据
+    active = config.active_collection()
+    if active in existing:
+        current = client.get_collection(active)
+        metadata = current.metadata or {}
+        if (metadata.get("fingerprint") == fingerprint.hexdigest()
+                and metadata.get("schema_version") == config.INDEX_SCHEMA_VERSION
+                and current.count() == len(chunks)):
+            print(f"Already indexed: {len(chunks)} passages.")
+            return
 
+    print(f"Embedding with {config.EMBEDDING_ID}", flush=True)
+    collection_name = f"{config.COLLECTION_NAME}-{uuid.uuid4().hex[:12]}"
     store = Chroma(
         client=client,
-        collection_name=config.COLLECTION_NAME,
-        embedding_function=embeddings,
+        collection_name=collection_name,
+        embedding_function=get_embeddings(),
         collection_metadata={
             "hnsw:space": "cosine",
             # 查询时必须用同一个 Embedding 模型，这里记下来供 rag.py 校验
-            "embedding_model": Path(config.EMBEDDING_MODEL_PATH).name,
+            "embedding_model": config.EMBEDDING_ID,
             "schema_version": config.INDEX_SCHEMA_VERSION,
+            "fingerprint": fingerprint.hexdigest(),
+            "documents": len({(d.metadata["project"], d.metadata["source"]) for d in chunks}),
         },
     )
 
-    batch_size = 128
-    for start in range(0, len(chunks), batch_size):
-        batch = chunks[start : start + batch_size]
-        ids = [chunk.metadata["chunk_id"] for chunk in batch]
-        store.add_documents(batch, ids=ids)
-        print(f"已写入 {min(start + batch_size, len(chunks))}/{len(chunks)}", flush=True)
+    batch_size = 32
+    try:
+        for start in range(0, len(chunks), batch_size):
+            batch = chunks[start : start + batch_size]
+            ids = [chunk.metadata["chunk_id"] for chunk in batch]
+            store.add_documents(batch, ids=ids)
+            print(f"Indexed {start + len(batch)}/{len(chunks)}", flush=True)
+        if client.get_collection(collection_name).count() != len(chunks):
+            raise RuntimeError("Incomplete index")
+        # Readers keep the previous collection until the complete replacement is published.
+        new_pointer = config.ACTIVE_INDEX.with_name(f"{collection_name}.tmp")
+        new_pointer.write_text(collection_name, encoding="utf-8")
+        new_pointer.replace(config.ACTIVE_INDEX)
+    except BaseException:
+        client.delete_collection(collection_name)
+        raise
 
     print(f"完成，向量库位于 {config.CHROMA_PATH}")
 
